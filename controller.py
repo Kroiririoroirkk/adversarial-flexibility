@@ -6,69 +6,74 @@ import torch.optim as optim
 import matplotlib.pyplot as plt
 import seaborn as sns
 
-from brain import Brain
+from brain import Brain, Clue
 from detective import Detective
 
 
-class Controller():
+class Controller:
     """
     Runs joint training of Brain and Detective.
     """
-    
-    def __init__(
-            self,
-            brain_batch_size=64,
-            detective_batch_size=64,
-            lr_brain=1e-4,
-            lr_detective=1e-4,
-            clue = 'Mean firing rate',
-            brain_kwargs=None,
-            detective_kwargs=None,
-            device=None,
-            seed=None
-        ):
+
+    def __init__(self,
+                 brain_batch_size=64,
+                 detective_batch_size=64,
+                 lr_brain=1e-4,
+                 lr_detective=1e-4,
+                 train_synapses=True,
+                 train_intrinsic=False,
+                 clue_type=Clue.ANSWER,
+                 brain_kwargs=None,
+                 detective_kwargs=None,
+                 device=None,
+                 seed=None):
 
         self.brain_batch_size = brain_batch_size
         self.detective_batch_size = detective_batch_size
         self.lr_brain = lr_brain
         self.lr_detective = lr_detective
-        self.clue = clue
+        self.clue_type = clue_type
 
         if seed is not None:
             torch.manual_seed(seed)
             np.random.seed(seed)
 
-        self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        self.device = device or ("cuda"
+                                 if torch.cuda.is_available() else "cpu")
 
         brain_kwargs = brain_kwargs or {}
         detective_kwargs = detective_kwargs or {}
 
         # Initialize Brain and Detective
-        self.brain = Brain(**brain_kwargs).to(self.device)
-        self.detective = Detective(**detective_kwargs).to(self.device)
-  
+        self.brain = Brain(num_neurons=100,
+                           pondering_length=100,
+                           train_synapses=train_synapses,
+                           train_intrinsic=train_intrinsic,
+                           **brain_kwargs).to(self.device)
+        self.detective = Detective(
+            clue_length=self.brain.get_clue_length(clue_type),
+            **detective_kwargs).to(self.device)
+
         # Optimizers
         self.opt_brain = optim.Adam(self.brain.parameters(), lr=self.lr_brain)
-        self.opt_detective = optim.Adam(self.detective.parameters(), lr=self.lr_detective)
+        self.opt_detective = optim.Adam(self.detective.parameters(),
+                                        lr=self.lr_detective)
 
         # Loss function
-        self.criterion = nn.BCEwithLogitsLoss()
+        self.criterion = nn.MSELoss()
 
     @torch.no_grad()
     def sample_inputs(self, batch_size):
         return torch.rand(batch_size, 1, device=self.device)
-    
 
     def brain_forward(self, x):
         outputs = self.brain.brain_response(x)
-        clues = self.brain.get_clues(self.clue)
+        clues = self.brain.get_clues(self.clue_type)
         return outputs, clues
-    
 
     def detective_forward(self, clues):
         preds = self.detective(clues)
         return preds
-    
 
     def brain_step(self):
         x = self.sample_inputs(self.brain_batch_size)
@@ -77,8 +82,9 @@ class Controller():
         output, clues = self.brain_forward(x)
         preds = self.detective_forward(clues)
 
-        # compute loss
-        loss_brain = - self.criterion(preds, output) # negative because we want to maximize the BCE
+        # Compute loss
+        loss_brain = -self.criterion(
+            preds, output)  # negative because we want to maximize the BCE
 
         # Backward pass
         self.opt_brain.zero_grad(set_to_none=True)
@@ -86,7 +92,7 @@ class Controller():
         self.opt_brain.step()
 
         return loss_brain.item()
-    
+
     def detective_step(self):
         x = self.sample_inputs(self.detective_batch_size)
 
@@ -96,7 +102,7 @@ class Controller():
         # Forward pass
         preds = self.detective_forward(clues)
 
-        # compute loss
+        # Compute loss
         loss_detective = self.criterion(preds, output)
 
         # Backward pass
@@ -105,8 +111,13 @@ class Controller():
         self.opt_detective.step()
 
         return loss_detective.item()
-    
-    def train(self, steps=1000, detective_updates_per_step=1, brain_updates_per_step=10, log_every=50, verbose=True):
+
+    def train(self,
+              steps=1000,
+              detective_updates_per_step=10,
+              brain_updates_per_step=100,
+              log_every=50,
+              verbose=True):
         logs = []
 
         # Training loop
@@ -128,9 +139,7 @@ class Controller():
             if verbose and step % log_every == 0:
                 print(f"Step {step}: LD = {ld:.4f}, LB = {lb:.4f}")
         return logs
-    
 
-    
     def plot_loss(self, logs):
 
         steps = [log[0] for log in logs]
@@ -149,6 +158,3 @@ class Controller():
 
         plt.tight_layout()
         plt.show()
-
-
-
